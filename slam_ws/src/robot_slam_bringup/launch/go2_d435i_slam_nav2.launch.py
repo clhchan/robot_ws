@@ -58,6 +58,8 @@ def generate_launch_description():
     nav2_startup_delay = LaunchConfiguration('nav2_startup_delay')
     nav2_autostart = LaunchConfiguration('nav2_autostart')
     nav2_use_composition = LaunchConfiguration('nav2_use_composition')
+    use_keepout_zones = LaunchConfiguration('use_keepout_zones')
+    keepout_mask = LaunchConfiguration('keepout_mask')
     log_level = LaunchConfiguration('log_level')
 
     declared_arguments = [
@@ -217,6 +219,19 @@ def generate_launch_description():
             description='是否把 Nav2 节点加载到同一个组件容器。',
         ),
         DeclareLaunchArgument(
+            'use_keepout_zones',
+            default_value='false',
+            description='是否启用 Nav2 KeepoutFilter 禁行区。',
+        ),
+        DeclareLaunchArgument(
+            'keepout_mask',
+            default_value=os.path.expanduser('~/.ros/keepout_mask.yaml'),
+            description=(
+                'Keepout mask 的 YAML 文件路径；默认使用 ~/.ros/keepout_mask.yaml，'
+                '其 PGM 与 YAML 应保持和原始地图相同的尺寸、分辨率和原点。'
+            ),
+        ),
+        DeclareLaunchArgument(
             'log_level',
             default_value='info',
             description='OpenVINS、RTAB-Map 和 Nav2 的日志等级。',
@@ -271,6 +286,7 @@ def generate_launch_description():
         replacements={
             'GO2_MAP_FRAME': map_frame_id,
             'GO2_ODOM_FRAME': odom_frame_id,
+            'KEEPOUT_ZONE_ENABLED': use_keepout_zones,
         },
     )
     rewritten_nav2_params = RewrittenYaml(
@@ -310,6 +326,68 @@ def generate_launch_description():
         }.items(),
     )
 
+    # KeepoutFilter 使用独立 mask map_server 和
+    # costmap_filter_info_server，不替换 RTAB-Map 发布的 /map。
+    keepout_mask_server = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='keepout_filter_mask_server',
+        output='screen',
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'yaml_filename': keepout_mask,
+                'topic_name': 'keepout_filter_mask',
+                'frame_id': map_frame_id,
+            }
+        ],
+        remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
+        arguments=['--ros-args', '--log-level', log_level],
+    )
+    keepout_filter_info_server = Node(
+        package='nav2_map_server',
+        executable='costmap_filter_info_server',
+        name='keepout_costmap_filter_info_server',
+        output='screen',
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'type': 0,
+                'filter_info_topic': '/keepout_costmap_filter_info',
+                'mask_topic': '/keepout_filter_mask',
+                'base': 0.0,
+                'multiplier': 1.0,
+            }
+        ],
+        remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
+        arguments=['--ros-args', '--log-level', log_level],
+    )
+    keepout_lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_keepout_zone',
+        output='screen',
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'autostart': ParameterValue(nav2_autostart, value_type=bool),
+                'node_names': [
+                    'keepout_filter_mask_server',
+                    'keepout_costmap_filter_info_server',
+                ],
+            }
+        ],
+        arguments=['--ros-args', '--log-level', log_level],
+    )
+    keepout_nodes = GroupAction(
+        condition=IfCondition(use_keepout_zones),
+        actions=[
+            keepout_mask_server,
+            keepout_filter_info_server,
+            keepout_lifecycle_manager,
+        ],
+    )
+
     # 两段延时分别保证外部传感器和 RTAB-Map 全局坐标系已经稳定。
     delayed_mapping_pipeline = TimerAction(
         period=startup_delay,
@@ -320,7 +398,7 @@ def generate_launch_description():
         actions=[
             GroupAction(
                 condition=IfCondition(navigation),
-                actions=[nav2_container, nav2_launch],
+                actions=[nav2_container, nav2_launch, keepout_nodes],
             ),
         ],
     )

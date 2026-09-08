@@ -51,6 +51,21 @@ ros2 launch robot_slam_bringup go2_d435i_slam_nav2.launch.py \
   database_path:=$HOME/.ros/rtabmap_go2_d435i.db
 ```
 
+启用 Keepout 禁行区时，在现有导航命令中追加开关和 mask YAML 路径。RTAB-Map 仍负责发布
+`/map`，Keepout mask 由独立的 Nav2 map server 发布：
+
+```bash
+ros2 launch robot_slam_bringup go2_d435i_slam_nav2.launch.py \
+  localization:=true \
+  navigation:=true \
+  delete_db_on_start:=false \
+  database_path:=$HOME/.ros/rtabmap_go2_d435i.db \
+  use_keepout_zones:=true \
+  keepout_mask:=$HOME/.ros/keepout_mask.yaml
+```
+
+mask YAML 对应的 PGM 必须与原始地图保持相同的尺寸、分辨率和原点；黑色区域表示禁行。
+
 HB 双目建图：
 
 ```bash
